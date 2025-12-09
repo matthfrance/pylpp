@@ -8,29 +8,7 @@ from urllib import request
 from urllib.error import HTTPError
 import concurrent.futures
 import csv
-
-
-
-cnamt_baseurl = 'http://www.codage.ext.cnamts.fr/cgi/tips/cgi-fiche?p_code_tips={lppcode}&p_date_jo_arrete=%25&p_menu=FICHE&p_site=AMELI'
-
-
-def populate_lpp_item_online(lpp_db):
-    augmented_lpp_records = []
-    for lpp_db_item in lpp_db:
-        cnamt_url = cnamt_baseurl.format(lppcode=lpp_db_item['CODE_TIPS'])
-        query = request.Request(cnamt_url, method='GET')
-        with request.urlopen(query) as result:
-            if 200 <= result.status <= 204:
-                result_data = result.read()
-                tree = etree.HTML(result_data)
-                for conf in lpp_fields_config:
-                    field_element = tree.xpath(conf['xpath'])
-                    field_value_prcsed = conf['processing_function'](field_element)
-                    lpp_db_item.update({conf['field']: field_value_prcsed})
-                augmented_lpp_records.append(lpp_db_item)
-            else:
-                raise HTTPError(result.reason)
-    return augmented_lpp_records
+import re
 
 
 def _lpp_data_process(element):
@@ -39,28 +17,60 @@ def _lpp_data_process(element):
     else:
         return element[0].text.replace('\n', '').replace('<br>', '').strip()
 
+def _lpp_get_elec_from_descr(lpp_db_item):
+    elec_payback = re.search('électricité à raison de ([0-9,]+) euro', lpp_db_item['Description'])
+    if elec_payback:
+        return elec_payback.group(1)
+    else:
+        return None
 
-lpp_fields_config = [
-  {'field': 'Description', 'xpath':'/html/body/table/tr[2]/td/table/tr[1]/td[3]/table/tr/td/table[3]/tr/td/font', 'processing_function': _lpp_data_process}
- ,{'field': 'Date début validité', 'xpath': '/html/body/table/tr[2]/td/table/tr[1]/td[3]/table/tr/td//font[text() = "Date début validité"]/../../td[3]', 'processing_function': _lpp_data_process}
- ,{'field': 'Date fin validité', 'xpath': '/html/body/table/tr[2]/td/table/tr[1]/td[3]/table/tr/td//font[text() = "Date fin validité"]/../../td[3]', 'processing_function': _lpp_data_process}
- ,{'field': 'Tarif', 'xpath': '/html/body/table/tr[2]/td/table/tr[1]/td[3]/table/tr/td//font[text() = "Tarif"]/../../td[3]', 'processing_function': _lpp_data_process}
- ,{'field': 'Montant max remboursement', 'xpath': '/html/body/table/tr[2]/td/table/tr[1]/td[3]/table/tr/td//font[text() = "Montant max remboursement"]/../../td[3]', 'processing_function': _lpp_data_process}
- ,{'field': 'Quantité max remboursement', 'xpath': '/html/body/table/tr[2]/td/table/tr[1]/td[3]/table/tr/td//font[text() = "Quantité max remboursement"]/../../td[3]', 'processing_function': _lpp_data_process}
- ,{'field': 'Entente préalable', 'xpath': '/html/body/table/tr[2]/td/table/tr[1]/td[3]/table/tr/td//font[text() = "Entente préalable"]/../../td[3]', 'processing_function': _lpp_data_process}
- ,{'field': 'Indications', 'xpath': '/html/body/table/tr[2]/td/table/tr[1]/td[3]/table/tr/td//font[text() = "Indications"]/../../td[3]', 'processing_function': _lpp_data_process}
- ,{'field': 'Identifiant', 'xpath': '/html/body/table/tr[2]/td/table/tr[1]/td[3]/table/tr/td//font[text() = "Identifiant"]/../../td[3]', 'processing_function': _lpp_data_process}
- ,{'field': 'Age maxi', 'xpath': '/html/body/table/tr[2]/td/table/tr[1]/td[3]/table/tr/td//font[text() = "Age maxi"]/../../td[3]', 'processing_function': _lpp_data_process}
- ,{'field': 'Nature de prestation', 'xpath': '/html/body/table/tr[2]/td/table/tr[1]/td[3]/table/tr/td//font[text() = "Nature de prestation"]/../../td[3]', 'processing_function': _lpp_data_process}
- ,{'field': 'Type de prestation', 'xpath': '/html/body/table/tr[2]/td/table/tr[1]/td[3]/table/tr/td//font[text() = "Type de prestation"]/../../td[3]', 'processing_function': _lpp_data_process}
- ,{'field': 'GUADELOUPE', 'xpath': '/html/body/table/tr[2]/td/table/tr[1]/td[3]/table/tr/td//font[text() = "GUADELOUPE"]/../../td[2]', 'processing_function': _lpp_data_process}
- ,{'field': 'MARTINIQUE', 'xpath': '/html/body/table/tr[2]/td/table/tr[1]/td[3]/table/tr/td//font[text() = "MARTINIQUE"]/../../td[2]', 'processing_function': _lpp_data_process}
- ,{'field': 'GUYANE', 'xpath': '/html/body/table/tr[2]/td/table/tr[1]/td[3]/table/tr/td//font[text() = "GUYANE"]/../../td[2]', 'processing_function': _lpp_data_process}
- ,{'field': 'REUNION', 'xpath': '/html/body/table/tr[2]/td/table/tr[1]/td[3]/table/tr/td//font[text() = "REUNION"]/../../td[2]', 'processing_function': _lpp_data_process}
- ,{'field': 'SAINT-PIERRE-ET-MIQUELON', 'xpath': '/html/body/table/tr[2]/td/table/tr[1]/td[3]/table/tr/td//font[text() = "SAINT-PIERRE-ET-MIQUELON"]/../../td[2]', 'processing_function': _lpp_data_process}
- ,{'field': 'MAYOTTE', 'xpath': '/html/body/table/tr[2]/td/table/tr[1]/td[3]/table/tr/td//font[text() = "MAYOTTE"]/../../td[2]', 'processing_function': _lpp_data_process}
+_lpp_fields_config = [
+  {'field': 'Description', 'xpath':'/html/body/table/tr[2]/td/table/tr[1]/td[3]/table/tr/td/table[3]/tr/td/font'}
+ ,{'field': 'Date début validité', 'xpath': '/html/body/table/tr[2]/td/table/tr[1]/td[3]/table/tr/td//font[text() = "Date début validité"]/../../td[3]'}
+ ,{'field': 'Date fin validité', 'xpath': '/html/body/table/tr[2]/td/table/tr[1]/td[3]/table/tr/td//font[text() = "Date fin validité"]/../../td[3]'}
+ ,{'field': 'Tarif', 'xpath': '/html/body/table/tr[2]/td/table/tr[1]/td[3]/table/tr/td//font[text() = "Tarif"]/../../td[3]'}
+ ,{'field': 'Montant max remboursement', 'xpath': '/html/body/table/tr[2]/td/table/tr[1]/td[3]/table/tr/td//font[text() = "Montant max remboursement"]/../../td[3]'}
+ ,{'field': 'Quantité max remboursement', 'xpath': '/html/body/table/tr[2]/td/table/tr[1]/td[3]/table/tr/td//font[text() = "Quantité max remboursement"]/../../td[3]'}
+ ,{'field': 'Entente préalable', 'xpath': '/html/body/table/tr[2]/td/table/tr[1]/td[3]/table/tr/td//font[text() = "Entente préalable"]/../../td[3]'}
+ ,{'field': 'Indications', 'xpath': '/html/body/table/tr[2]/td/table/tr[1]/td[3]/table/tr/td//font[text() = "Indications"]/../../td[3]'}
+ ,{'field': 'Identifiant', 'xpath': '/html/body/table/tr[2]/td/table/tr[1]/td[3]/table/tr/td//font[text() = "Identifiant"]/../../td[3]'}
+ ,{'field': 'Age maxi', 'xpath': '/html/body/table/tr[2]/td/table/tr[1]/td[3]/table/tr/td//font[text() = "Age maxi"]/../../td[3]'}
+ ,{'field': 'Nature de prestation', 'xpath': '/html/body/table/tr[2]/td/table/tr[1]/td[3]/table/tr/td//font[text() = "Nature de prestation"]/../../td[3]'}
+ ,{'field': 'Type de prestation', 'xpath': '/html/body/table/tr[2]/td/table/tr[1]/td[3]/table/tr/td//font[text() = "Type de prestation"]/../../td[3]'}
+ ,{'field': 'GUADELOUPE', 'xpath': '/html/body/table/tr[2]/td/table/tr[1]/td[3]/table/tr/td//font[text() = "GUADELOUPE"]/../../td[2]'}
+ ,{'field': 'MARTINIQUE', 'xpath': '/html/body/table/tr[2]/td/table/tr[1]/td[3]/table/tr/td//font[text() = "MARTINIQUE"]/../../td[2]'}
+ ,{'field': 'GUYANE', 'xpath': '/html/body/table/tr[2]/td/table/tr[1]/td[3]/table/tr/td//font[text() = "GUYANE"]/../../td[2]'}
+ ,{'field': 'REUNION', 'xpath': '/html/body/table/tr[2]/td/table/tr[1]/td[3]/table/tr/td//font[text() = "REUNION"]/../../td[2]'}
+ ,{'field': 'SAINT-PIERRE-ET-MIQUELON', 'xpath': '/html/body/table/tr[2]/td/table/tr[1]/td[3]/table/tr/td//font[text() = "SAINT-PIERRE-ET-MIQUELON"]/../../td[2]'}
+ ,{'field': 'MAYOTTE', 'xpath': '/html/body/table/tr[2]/td/table/tr[1]/td[3]/table/tr/td//font[text() = "MAYOTTE"]/../../td[2]'}
 ]
 
+_lpp_calculated_fields = {
+  'Remboursement électricité': _lpp_get_elec_from_descr
+}
+
+
+_cnamt_baseurl = 'http://www.codage.ext.cnamts.fr/cgi/tips/cgi-fiche?p_code_tips={lppcode}&p_date_jo_arrete=%25&p_menu=FICHE&p_site=AMELI'
+
+def populate_lpp_item_online(lpp_db):
+    augmented_lpp_records = []
+    for lpp_db_item in lpp_db:
+        cnamt_url = _cnamt_baseurl.format(lppcode=lpp_db_item['CODE_TIPS'])
+        query = request.Request(cnamt_url, method='GET')
+        with request.urlopen(query) as result:
+            if 200 <= result.status <= 204:
+                result_data = result.read()
+                tree = etree.HTML(result_data)
+                for conf in _lpp_fields_config:
+                    field_element = tree.xpath(conf['xpath'])
+                    field_value_prcsed = _lpp_data_process(field_element)
+                    lpp_db_item.update({conf['field']: field_value_prcsed})
+                for new_field, calculation in _lpp_calculated_fields.items():
+                    lpp_db_item[new_field] = calculation(lpp_db_item)
+                augmented_lpp_records.append(lpp_db_item)
+            else:
+                raise HTTPError(result.reason)
+    return augmented_lpp_records
 
 
 class LPPDatabase:
