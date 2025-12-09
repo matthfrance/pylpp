@@ -8,7 +8,6 @@ output_lppcsvfile = './lpp.csv'
 
 lppdb = LPPDatabase(filepath)
 lppdb.filter(exclude_outdated=False)
-print(len(lppdb.database))
 
 lppdb.populate_online()
 
