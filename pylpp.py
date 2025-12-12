@@ -9,8 +9,10 @@ from urllib.error import HTTPError
 import concurrent.futures
 import csv
 import logging
+import os
 import re
 import sys
+import zipfile
 
 
 def _lpp_data_process(element):
@@ -52,8 +54,10 @@ _lpp_calculated_fields = {
 }
 
 
+_cnamt_domain = 'http://www.codage.ext.cnamts.fr'
 _cnamt_baseurl = 'http://www.codage.ext.cnamts.fr/cgi/tips/cgi-fiche?p_code_tips={lppcode}&p_date_jo_arrete=%25&p_menu=FICHE&p_site=AMELI'
 _cnamt_lppversion_url = 'http://www.codage.ext.cnamts.fr/codif/tips/telecharge/index_tele.php?p_site=AMELI'
+
 
 def populate_lpp_item_online(lpp_db, _logger=None):
     """
@@ -89,6 +93,52 @@ def populate_lpp_item_online(lpp_db, _logger=None):
     return augmented_lpp_records
 
 
+def download_current_db_online(data_dir, _logger=None):
+    """
+    Télécharge la version courante de la base de données LPP.
+
+    :param data_dir: Chemin du dossier dans lequel télécharger la base.
+    :type data_dir: str
+    :param _logger: The logger instance to use for logging (optional).
+    :type _logger: logging.Logger
+    """
+    query = request.Request(_cnamt_lppversion_url, method='GET')
+    with request.urlopen(query) as result:
+        if 200 <= result.status <= 204:
+            db_info = {}
+            result_data = result.read()
+            tree = etree.HTML(result_data)
+            version_element = tree.xpath('/html/body/table/tr[2]/td/table/tr[1]/td[3]/table//font[contains(text(),"Version du")]')
+            version = re.search('[0-9]+\/[0-9]+\/[0-9]+', version_element[0].text.strip()).group(0)
+            db_info.update({'version': version})
+            link_element = tree.xpath('/html/body/table/tr[2]/td/table/tr[1]/td[3]/table//a[contains(text(),".zip")]/@href')
+            dl_file = re.search('LPP[0-9]+\.zip', link_element[0].strip()).group(0)
+            db_info.update({'archive_file': dl_file})
+            dl_filepath = os.path.join(data_dir,dl_file)
+            dl_url = _cnamt_domain + link_element[0].strip()
+            os.makedirs(data_dir, exist_ok=True)
+            if not os.path.isfile(dl_filepath):
+                if _logger:
+                    _logger.info('Downloading & Unziping LPP database from "{}" ...'.format(dl_url))
+                request.urlretrieve(dl_url, dl_filepath)
+                with zipfile.ZipFile(dl_filepath, "r") as z:
+                    z.extractall(data_dir)
+            else:
+                if _logger:
+                    _logger.debug('LPP database already exists : "{}".'.format(dl_filepath))
+            for root, dirs, files in os.walk(data_dir):
+                for file in files:
+                    if file.endswith('.dbf'):
+                        db_info.update({file[:-7]: os.path.join(root, file)})
+            if _logger:
+                _logger.info('Base LPP courante : {} du {}.'.format(dl_file, version))
+            return db_info
+        else:
+            if _logger:
+                _logger.error('Error {}: {}'.format(result.status, result.reason))
+            raise HTTPError(result.reason)
+
+
 class LPPDatabase:
     """
     Réceptable de la base de donnée des codes LPP et des informations qui y sont liées.
@@ -98,31 +148,44 @@ class LPPDatabase:
         for i in range(0, len(iterable), n):
             yield iterable[i:i+n]
 
+    def getLogger(debug=False):
+        """
+        Récupère un logger pré-configuré pour écrire sur la console.
+
+        :param debug: Active le mode debug (verbeux)
+        :type debug: bool
+        """
+        logger = logging.getLogger(__name__)
+        if not logger.handlers:
+            if debug:
+                logger.setLevel(logging.DEBUG)
+            else:
+                logger.setLevel(logging.INFO)
+            stdout_handler = logging.StreamHandler(sys.stdout)
+            stdout_handler.setLevel(logging.DEBUG)
+            if debug:
+                stdout_handler.setLevel(logging.DEBUG)
+            else:
+                stdout_handler.setLevel(logging.INFO)
+            stderr_handler = logging.StreamHandler(sys.stderr)
+            stderr_handler.setLevel(logging.WARNING)
+            formatter = logging.Formatter("[%(asctime)s][%(levelname)-8s] %(message)s")
+            stdout_handler.setFormatter(formatter)
+            stderr_handler.setFormatter(formatter)
+            logger.addHandler(stdout_handler)
+            logger.addHandler(stderr_handler)
+        return logger
+
     def __init__(self, dbf_filepath, debug=False):
         """
         Créée l'objet base de données LPP à partir d'un fichier ".dbf" du CNAMTS.
 
         :param dbf_filepath: Chemin vers le fichier ".dbf" téléchargé sur le site www.codage.ext.cnamts.fr.
         :type dbf_filepath: str
+        :param debug: Active le mode debug (verbeux)
+        :type debug: bool
         """
-        self._logger = logging.getLogger(__name__)
-        if debug:
-            self._logger.setLevel(logging.DEBUG)
-        else:
-            self._logger.setLevel(logging.INFO)
-        stdout_handler = logging.StreamHandler(sys.stdout)
-        stdout_handler.setLevel(logging.DEBUG)
-        if debug:
-            stdout_handler.setLevel(logging.DEBUG)
-        else:
-            stdout_handler.setLevel(logging.INFO)
-        stderr_handler = logging.StreamHandler(sys.stderr)
-        stderr_handler.setLevel(logging.WARNING)
-        formatter = logging.Formatter("[%(asctime)s][%(levelname)-8s] %(message)s")
-        stdout_handler.setFormatter(formatter)
-        stderr_handler.setFormatter(formatter)
-        self._logger.addHandler(stdout_handler)
-        self._logger.addHandler(stderr_handler)
+        self._logger = LPPDatabase.getLogger(debug)
 
         self._logger.info('Loading file "{}" ...'.format(dbf_filepath))
         self._database = DBF(dbf_filepath, encoding='cp1252')
