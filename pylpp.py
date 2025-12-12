@@ -53,8 +53,17 @@ _lpp_calculated_fields = {
 
 
 _cnamt_baseurl = 'http://www.codage.ext.cnamts.fr/cgi/tips/cgi-fiche?p_code_tips={lppcode}&p_date_jo_arrete=%25&p_menu=FICHE&p_site=AMELI'
+_cnamt_lppversion_url = 'http://www.codage.ext.cnamts.fr/codif/tips/telecharge/index_tele.php?p_site=AMELI'
 
 def populate_lpp_item_online(lpp_db, _logger=None):
+    """
+    Enrichis la base de données LPP fournie en récupérant les informations disponibles sur le site http://www.codage.ext.cnamts.fr/codif/tips/index.php.
+
+    :param lpp_db: Base de données LPP.
+    :type lpp_db: list[dict[str, Any]]
+    :param _logger: The logger instance to use for logging (optional).
+    :type _logger: logging.Logger
+    """
     augmented_lpp_records = []
     for lpp_db_item in lpp_db:
         cnamt_url = _cnamt_baseurl.format(lppcode=lpp_db_item['CODE_TIPS'])
@@ -65,7 +74,7 @@ def populate_lpp_item_online(lpp_db, _logger=None):
                 tree = etree.HTML(result_data)
                 for conf in _lpp_fields_config:
                     field_element = tree.xpath(conf['xpath'])
-                    if(type(field_element) == list and len(field_element) != 1):
+                    if(type(field_element) != list or len(field_element) != 1):
                         if _logger:
                             _logger.debug('Populating, XPath query found {} results (instead of 1)'.format(len(field_element)))
                     field_value_prcsed = _lpp_data_process(field_element)
@@ -81,11 +90,21 @@ def populate_lpp_item_online(lpp_db, _logger=None):
 
 
 class LPPDatabase:
+    """
+    Réceptable de la base de donnée des codes LPP et des informations qui y sont liées.
+    """
+
     def _splitlist(iterable, n):
         for i in range(0, len(iterable), n):
             yield iterable[i:i+n]
 
     def __init__(self, dbf_filepath, debug=False):
+        """
+        Créée l'objet base de données LPP à partir d'un fichier ".dbf" du CNAMTS.
+
+        :param dbf_filepath: Chemin vers le fichier ".dbf" téléchargé sur le site www.codage.ext.cnamts.fr.
+        :type dbf_filepath: str
+        """
         self._logger = logging.getLogger(__name__)
         if debug:
             self._logger.setLevel(logging.DEBUG)
@@ -110,9 +129,25 @@ class LPPDatabase:
 
     @property
     def database(self):
+        """
+        Base de données LPP.
+
+        :returns: La base de données dans son état actuel (ie. filtrée, enrichie, ...).
+        :rtype: list[dict[str, Any]]
+        """
         return self._database
 
     def filter(self, exclude_outdated=True, arbo1_exclude=None, limit=None):
+        """
+        Filtre la base de données LPP selon plusieurs critères.
+
+        :param exclude_outdated: Critère d'obsolecence - permet d'exclure les codes LPP dont la date de fin est dans le passé.
+        :type exclude_outdated: bool
+        :param arbo1_exclude: Critère hiérarchique - permet d'exclure les codes LPP appartenant à un "chapitre" donné (on utilise la numérotataion de chapitres suivante http://www.codage.ext.cnamts.fr/codif/tips//chapitre/index_chap.php?p_ref_menu_code=1&p_site=AMELI).
+        :type arbo1_exclude: list[int]
+        :param limit: Critère de nombre - permet de ne retourner que les N premières lignes (idéal pour les tests).
+        :type limit: int
+        """
         lpp_db_filtered = []
         i = 0
         for lpp_db_item in self._database:
@@ -129,6 +164,14 @@ class LPPDatabase:
         self._database = lpp_db_filtered
 
     def populate_online(self, thread_count=30, batch_size=300):
+        """
+        Enrichis la base de données LPP en récupérant les informations disponibles sur le site http://www.codage.ext.cnamts.fr/codif/tips/index.php, avec plusieurs unités de traitement (thread) parallèles.
+
+        :param thread_count: Nombre d'unitées de traitement parallèles (pour la récupération d'informations sur le site).
+        :type thread_count: int
+        :param batch_size: Nombre de codes LPP donnés à chaque unité de traitement.
+        :type batch_size: int
+        """
         self._logger.info('Populating online (thread_count={}, batch_size={}) ...'.format(thread_count, batch_size))
         executor = concurrent.futures.ThreadPoolExecutor(thread_count)
         threads = [executor.submit(populate_lpp_item_online, group, self._logger) for group in LPPDatabase._splitlist(self._database, batch_size)]
@@ -139,6 +182,12 @@ class LPPDatabase:
         self._logger.info('Populating online suceeded')
 
     def write_CSV(self, csv_filepath):
+        """
+        Ecris la base de données (dans son état actuel, ie. filtrée, enrichie, ...) vers un fichier CSV.
+
+        :param csv_filepath: Path of the CSV file to write.
+        :type csv_filepath: str
+        """
         self._logger.info('Writing CSV "{}" ...'.format(csv_filepath))
         with open(csv_filepath, 'w') as csvfile:
             fieldnames = self._database[0].keys()
